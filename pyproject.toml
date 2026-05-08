@@ -1,0 +1,18 @@
+[project]
+name = "fridge-detector"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.11.0",
+    "torchvision>=0.26.0",
+    "rich>=13.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/utils", "src/models", "src/data"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
