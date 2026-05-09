@@ -27,12 +27,8 @@ import uvicorn
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'src'))
 
-from data.dataset import VOCDetectionDataset
 from models.detector import FridgeDetector
 from utils import get_device
-
-
-CLASS_NAMES = VOCDetectionDataset.FREIBURG_CLASSES
 
 
 def parse_args() -> argparse.Namespace:
@@ -46,9 +42,13 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def build_model(args: argparse.Namespace, device: torch.device) -> FridgeDetector:
+def build_model(args: argparse.Namespace, device: torch.device) -> tuple[FridgeDetector, list[str]]:
     ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
-    num_classes = ckpt.get('num_classes', len(CLASS_NAMES))
+    class_names = ckpt.get('class_names')
+    if not class_names:
+        num_classes = ckpt.get('num_classes', 1)
+        class_names = [f'class_{idx + 1}' for idx in range(num_classes)]
+    num_classes = ckpt.get('num_classes', len(class_names))
 
     model = FridgeDetector(
         num_classes=num_classes,
@@ -58,7 +58,7 @@ def build_model(args: argparse.Namespace, device: torch.device) -> FridgeDetecto
     ).to(device)
     model.load_state_dict(ckpt['model'])
     model.eval()
-    return model
+    return model, class_names
 
 
 def image_to_tensor(data: bytes, image_size: int, device: torch.device) -> torch.Tensor:
@@ -73,7 +73,7 @@ def image_to_tensor(data: bytes, image_size: int, device: torch.device) -> torch
 
 def app_factory(args: argparse.Namespace) -> FastAPI:
     device = get_device()
-    model = build_model(args, device)
+    model, class_names = build_model(args, device)
 
     app = FastAPI(title='Fridge Detector API', version='1.0.0')
 
@@ -121,9 +121,9 @@ def app_factory(args: argparse.Namespace) -> FastAPI:
             if s < score_threshold:
                 continue
             idx = int(label.item()) - 1
-            if idx < 0 or idx >= len(CLASS_NAMES):
+            if idx < 0 or idx >= len(class_names):
                 continue
-            name = CLASS_NAMES[idx]
+            name = class_names[idx]
             if target and name != target:
                 continue
 

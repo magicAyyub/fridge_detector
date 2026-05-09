@@ -111,11 +111,19 @@ def main():
 
     # Load checkpoint
     ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
-    num_classes = ckpt.get('num_classes', len(args.class_names) if args.class_names else 4)
+    ckpt_class_names = ckpt.get('class_names')
+    num_classes = ckpt.get(
+        'num_classes',
+        len(args.class_names) if args.class_names else len(ckpt_class_names) if ckpt_class_names else 4,
+    )
 
     if args.class_names is None:
-        # Default to synthetic class names
-        args.class_names = SyntheticFridgeDataset.CLASS_NAMES[:num_classes]
+        if ckpt_class_names:
+            args.class_names = ckpt_class_names
+        elif num_classes == len(SyntheticFridgeDataset.CLASS_NAMES):
+            args.class_names = SyntheticFridgeDataset.CLASS_NAMES
+        else:
+            args.class_names = [f'class_{idx + 1}' for idx in range(num_classes)]
 
     console.print(Panel(
         f"[bold]Checkpoint:[/bold] [cyan]{args.checkpoint}[/cyan]\n"

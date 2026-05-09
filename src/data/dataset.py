@@ -1,11 +1,8 @@
-"""
-Dataset loader.
+"""Dataset loader.
 
 Supports:
-  1. Pascal VOC-style annotations (XML files) — for the Freiburg Groceries
-     extended dataset.
-  2. A small synthetic toy dataset — for smoke-testing the pipeline without
-     downloading anything.
+  1. Roboflow/YOLO-style datasets with ``data.yaml`` and ``labels/*.txt``
+  2. A small synthetic toy dataset for smoke-testing the training loop
 
 Each sample yields:
   - image: float tensor (3, H, W) in [0, 1]
@@ -13,100 +10,155 @@ Each sample yields:
       'boxes':  float (M, 4) in xyxy
       'labels': long  (M,)  — class IDs in [1, num_classes] (0 reserved for background)
 """
-import os
-import xml.etree.ElementTree as ET
+
+from pathlib import Path
 
 import torch
 from torch.utils.data import Dataset
 from PIL import Image
 import torchvision.transforms.functional as TF
+import yaml
 
 
-class VOCDetectionDataset(Dataset):
-    """Pascal-VOC-style dataset (XML annotations).
+SUPPORTED_IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp')
 
-    Works with both flat directories and nested per-class subdirectories
-    (e.g. annotations/beans/*.xml + images/beans/*.png).
+
+def _normalize_class_names(names) -> list[str]:
+    if isinstance(names, list):
+        return [str(name) for name in names]
+    if isinstance(names, dict):
+        return [str(names[key]) for key in sorted(names, key=lambda value: int(value))]
+    raise ValueError(f'Unsupported names field in data.yaml: {type(names)!r}')
+
+
+def _resolve_split_path(root: Path, split_value: str) -> Path:
+    split_path = Path(split_value)
+    if split_path.is_absolute():
+        return split_path.resolve()
+
+    candidates = [(root / split_path).resolve()]
+
+    trimmed_parts = list(split_path.parts)
+    while trimmed_parts and trimmed_parts[0] == '..':
+        trimmed_parts = trimmed_parts[1:]
+        if trimmed_parts:
+            candidates.append((root / Path(*trimmed_parts)).resolve())
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    return candidates[0]
+
+
+def load_roboflow_data_config(data_dir: str) -> tuple[list[str], dict[str, Path]]:
+    """Read Roboflow ``data.yaml`` and resolve split image dirs."""
+    root = Path(data_dir).expanduser().resolve()
+    data_yaml = root / 'data.yaml'
+    if not data_yaml.exists():
+        raise FileNotFoundError(f'Expected Roboflow data.yaml at {data_yaml}')
+
+    with open(data_yaml) as f:
+        cfg = yaml.safe_load(f) or {}
+
+    class_names = _normalize_class_names(cfg.get('names', []))
+    if not class_names:
+        raise ValueError(f'No class names found in {data_yaml}')
+
+    split_dirs: dict[str, Path] = {}
+    for key in ('train', 'val', 'valid', 'test'):
+        value = cfg.get(key)
+        if value:
+            split_dirs[key] = _resolve_split_path(root, value)
+
+    if 'train' not in split_dirs:
+        raise ValueError(f'No train split defined in {data_yaml}')
+    return class_names, split_dirs
+
+
+class RoboflowDetectionDataset(Dataset):
+    """YOLO txt annotations exported by Roboflow.
+
+    Expected layout:
+      dataset/
+        data.yaml
+        train/images/*.jpg
+        train/labels/*.txt
+        valid/images/*.jpg
+        valid/labels/*.txt
     """
 
-    # Freiburg Groceries Dataset — 25 classes
-    FREIBURG_CLASSES = [
-        'beans', 'cake', 'candy', 'cereal', 'chips', 'chocolate', 'coffee',
-        'corn', 'fish', 'flour', 'honey', 'jam', 'juice', 'milk', 'nuts',
-        'oil', 'pasta', 'rice', 'soda', 'spices', 'sugar', 'tea',
-        'tomato_sauce', 'vinegar', 'water',
-    ]
-
-    def __init__(self, image_dir: str, annot_dir: str, class_names: list,
+    def __init__(self, image_dir: str, label_dir: str, class_names: list[str],
                  image_size: int = 512, augment: bool = False):
-        self.image_dir = image_dir
-        self.annot_dir = annot_dir
+        self.image_dir = Path(image_dir)
+        self.label_dir = Path(label_dir)
         self.class_names = class_names
-        self.class_to_idx = {name: i + 1 for i, name in enumerate(class_names)}  # 0 = bg
         self.image_size = image_size
         self.augment = augment
 
-        # Build a case-insensitive index of all images on disk so we can
-        # match annotation subdirs like "beans/" against image subdirs like "BEANS/".
-        img_index: dict[str, str] = {}  # lowercase relative path → actual path
-        for dirpath, _, filenames in os.walk(image_dir):
-            for fname in filenames:
-                if not fname.lower().endswith(('.jpg', '.jpeg', '.png')):
-                    continue
-                full = os.path.join(dirpath, fname)
-                rel = os.path.relpath(full, image_dir).lower()
-                img_index[rel] = full
+        if not self.image_dir.exists():
+            raise FileNotFoundError(f'Image dir not found: {self.image_dir}')
+        if not self.label_dir.exists():
+            raise FileNotFoundError(f'Label dir not found: {self.label_dir}')
 
-        # Walk all subdirectories to support nested per-class layouts
-        self.samples = []
-        for dirpath, _, filenames in os.walk(annot_dir):
-            rel_dir = os.path.relpath(dirpath, annot_dir)
-            for fname in sorted(filenames):
-                if not fname.endswith('.xml'):
-                    continue
-                stem = fname[:-4]
-                xml_path = os.path.join(dirpath, fname)
-                for ext in ['.jpg', '.jpeg', '.png']:
-                    key = os.path.join(rel_dir, stem + ext).lower()
-                    if key in img_index:
-                        self.samples.append((img_index[key], xml_path))
-                        break
+        self.samples: list[tuple[Path, Path]] = []
+        for image_path in sorted(self.image_dir.rglob('*')):
+            if image_path.suffix.lower() not in SUPPORTED_IMAGE_EXTENSIONS:
+                continue
+            label_path = self.label_dir / f'{image_path.stem}.txt'
+            self.samples.append((image_path, label_path))
+
+        if not self.samples:
+            raise ValueError(f'No images found in {self.image_dir}')
 
     def __len__(self):
         return len(self.samples)
 
-    def _parse_voc_xml(self, xml_path: str) -> tuple:
-        root = ET.parse(xml_path).getroot()
+    def _parse_yolo_label(self, label_path: Path, orig_w: int, orig_h: int) -> tuple[list, list]:
         boxes, labels = [], []
-        for obj in root.findall('object'):
-            name = obj.find('name').text
-            if name not in self.class_to_idx:
-                continue
-            bbox = obj.find('bndbox')
-            x1 = float(bbox.find('xmin').text)
-            y1 = float(bbox.find('ymin').text)
-            x2 = float(bbox.find('xmax').text)
-            y2 = float(bbox.find('ymax').text)
-            if x2 <= x1 or y2 <= y1:
-                continue
-            boxes.append([x1, y1, x2, y2])
-            labels.append(self.class_to_idx[name])
+        if not label_path.exists():
+            return boxes, labels
+
+        with open(label_path) as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) != 5:
+                    continue
+
+                cls_id = int(float(parts[0]))
+                if cls_id < 0 or cls_id >= len(self.class_names):
+                    continue
+
+                cx, cy, bw, bh = (float(value) for value in parts[1:])
+                x1 = (cx - bw / 2.0) * orig_w
+                y1 = (cy - bh / 2.0) * orig_h
+                x2 = (cx + bw / 2.0) * orig_w
+                y2 = (cy + bh / 2.0) * orig_h
+
+                x1 = max(0.0, min(float(orig_w), x1))
+                y1 = max(0.0, min(float(orig_h), y1))
+                x2 = max(0.0, min(float(orig_w), x2))
+                y2 = max(0.0, min(float(orig_h), y2))
+                if x2 <= x1 or y2 <= y1:
+                    continue
+
+                boxes.append([x1, y1, x2, y2])
+                labels.append(cls_id + 1)
+
         return boxes, labels
 
     def __getitem__(self, idx):
-        img_path, xml_path = self.samples[idx]
+        img_path, label_path = self.samples[idx]
         image = Image.open(img_path).convert('RGB')
         orig_w, orig_h = image.size
-        boxes, labels = self._parse_voc_xml(xml_path)
+        boxes, labels = self._parse_yolo_label(label_path, orig_w, orig_h)
 
-        # Resize image and scale boxes
         image = image.resize((self.image_size, self.image_size), Image.BILINEAR)
         scale_x = self.image_size / orig_w
         scale_y = self.image_size / orig_h
         boxes = [[b[0] * scale_x, b[1] * scale_y, b[2] * scale_x, b[3] * scale_y]
                  for b in boxes]
 
-        # Optional augmentation: horizontal flip
         if self.augment and torch.rand(1).item() < 0.5:
             image = image.transpose(Image.FLIP_LEFT_RIGHT)
             new_boxes = []
@@ -115,7 +167,7 @@ class VOCDetectionDataset(Dataset):
                 new_boxes.append([self.image_size - x2, y1, self.image_size - x1, y2])
             boxes = new_boxes
 
-        image = TF.to_tensor(image)  # (3, H, W) in [0, 1]
+        image = TF.to_tensor(image)
         target = {
             'boxes': torch.tensor(boxes, dtype=torch.float32) if boxes
                      else torch.zeros((0, 4), dtype=torch.float32),
@@ -126,21 +178,13 @@ class VOCDetectionDataset(Dataset):
 
 
 class SyntheticFridgeDataset(Dataset):
-    """
-    A toy dataset that draws colored rectangles at known positions.
-    Used to smoke-test the training loop end-to-end without real data.
+    """Small synthetic dataset for end-to-end smoke tests."""
 
-    Class colors:
-      1: red    (tomato)
-      2: green  (lettuce)
-      3: yellow (butter)
-      4: white  (milk)
-    """
     CLASS_COLORS = {
-        1: (220, 30, 30),     # tomato
-        2: (60, 180, 60),     # lettuce
-        3: (250, 230, 80),    # butter
-        4: (245, 245, 245),   # milk
+        1: (220, 30, 30),
+        2: (60, 180, 60),
+        3: (250, 230, 80),
+        4: (245, 245, 245),
     }
     CLASS_NAMES = ['tomato', 'lettuce', 'butter', 'milk']
 
@@ -149,18 +193,15 @@ class SyntheticFridgeDataset(Dataset):
         self.length = length
         self.image_size = image_size
         self.max_objects = max_objects
-        # Deterministic but per-sample
         self.seed = seed
 
     def __len__(self):
         return self.length
 
     def __getitem__(self, idx):
-        # Per-sample RNG so results are reproducible
         g = torch.Generator().manual_seed(self.seed + idx)
 
         S = self.image_size
-        # Background — soft gray with slight noise
         image = torch.full((3, S, S), 0.6) + 0.05 * torch.randn(3, S, S, generator=g)
 
         n_objects = int(torch.randint(1, self.max_objects + 1, (1,), generator=g).item())
@@ -169,7 +210,6 @@ class SyntheticFridgeDataset(Dataset):
             cls = int(torch.randint(1, len(self.CLASS_COLORS) + 1, (1,), generator=g).item())
             color = torch.tensor(self.CLASS_COLORS[cls], dtype=torch.float32) / 255.0
 
-            # Random box, with some minimum size
             min_size, max_size = S // 8, S // 3
             w = int(torch.randint(min_size, max_size, (1,), generator=g).item())
             h = int(torch.randint(min_size, max_size, (1,), generator=g).item())
@@ -177,9 +217,7 @@ class SyntheticFridgeDataset(Dataset):
             y1 = int(torch.randint(0, S - h, (1,), generator=g).item())
             x2, y2 = x1 + w, y1 + h
 
-            # Paint rectangle (with a bit of edge softening so it looks less synthetic)
             image[:, y1:y2, x1:x2] = color.view(3, 1, 1)
-            # Add small noise inside so the model learns texture too, not just color
             image[:, y1:y2, x1:x2] += 0.03 * torch.randn(3, h, w, generator=g)
 
             boxes.append([x1, y1, x2, y2])
@@ -194,7 +232,7 @@ class SyntheticFridgeDataset(Dataset):
 
 
 def collate_fn(batch):
-    """Custom collate — images can stack, but targets stay as a list (variable-length)."""
+    """Custom collate — images stack, targets stay variable-length."""
     images = torch.stack([b[0] for b in batch])
     targets = [b[1] for b in batch]
     return images, targets

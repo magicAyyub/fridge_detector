@@ -93,3 +93,64 @@ The total loss is a sum of four:
 | `box_loss` | Refine proposal coordinates per class | Smooth L1 (positives only) |
 
 Watch them all decrease during training. If `rpn_obj_loss` stays high, your anchor sizes probably don't match your data. If `cls_loss` stays high but RPN losses drop, the second stage isn't getting good proposals.
+
+---
+
+## Quantity Estimation with SAM
+
+Detection answers "what is present". Quantity needs an additional stage.
+
+### Why add SAM
+
+- Bounding boxes are coarse and include background.
+- Quantity proxies are stronger when based on segmented object pixels.
+- SAM can be prompted with detector boxes, so we can reuse the current model.
+
+### Proposed Hybrid Pipeline
+
+1. Run current detector (class + score + box).
+2. For each accepted detection, prompt SAM with the box.
+3. Keep SAM mask with highest stability score for that box.
+4. Compute mask-derived features:
+     - mask area (pixels)
+     - relative area (mask area / image area)
+     - shape cues (elongation, compactness)
+5. Convert features to quantity using class-specific rules.
+
+### Quantity Rules (V1)
+
+- **Countable items** (`apple`, `banana`, `tomato`, `eggs`):
+    quantity = number of filtered instances.
+- **Package-like items** (`milk`, `yogurt`, `cheese`, `butter`):
+    quantity = estimated packs using instance count and confidence.
+- **Bulk items** (`rice`, `lentil`, `beans`):
+    quantity = relative amount (low/medium/high) from segmented area.
+
+### Important Constraint
+
+With a single RGB image, exact grams/ml are generally not reliable without
+calibration, known container size, or depth. In V1, return practical units
+(`count`, `pack`, `level`) instead of fake precision.
+
+### API Output Extension
+
+Keep existing fields and add quantity metadata per ingredient:
+
+- `estimated_quantity`: numeric value
+- `unit`: `count | pack | level`
+- `method`: `instance_count | area_proxy | rule_based`
+- `quantity_confidence`: 0..1
+
+### Model Choice Notes
+
+- Start with SAM 2 image predictor on backend for quality.
+- If latency becomes an issue, switch to a lighter variant (for example
+    MobileSAM/FastSAM) while keeping the same API contract.
+
+### Rollout Plan
+
+1. **V1 (fast win)**: detector instance counting + class-to-unit rules.
+2. **V2**: SAM masks for area-based quantity proxy.
+3. **V3**: class-specific estimators (for example egg-carton occupancy,
+     bottle fill level).
+4. **V4**: temporal smoothing across scans for stable household inventory.

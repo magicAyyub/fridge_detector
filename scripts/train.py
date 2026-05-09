@@ -3,13 +3,13 @@ Training script.
 
 Trains FridgeDetector on either:
   - The synthetic toy dataset (--synthetic) — for verification
-  - A Pascal-VOC-style dataset (--data-dir) — for real training
+    - A Roboflow/YOLO-style dataset (--data-dir) — for real training
 
 Usage:
     # Quick verification with synthetic data
     python scripts/train.py --synthetic --epochs 5 --batch-size 4
 
-    # Real training (requires VOC-format dataset)
+    # Real training (requires a Roboflow export with data.yaml)
     python scripts/train.py --data-dir /path/to/dataset --epochs 30
 """
 import argparse
@@ -20,7 +20,7 @@ from pathlib import Path
 import yaml
 
 import torch
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, Subset, random_split
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import (Progress, BarColumn, TextColumn,
@@ -30,11 +30,14 @@ from rich.rule import Rule
 
 from models.detector import FridgeDetector
 from utils import get_device
-from data.dataset import (SyntheticFridgeDataset, VOCDetectionDataset, collate_fn)
+from data.dataset import (
+    RoboflowDetectionDataset,
+    SyntheticFridgeDataset,
+    collate_fn,
+    load_roboflow_data_config,
+)
 
-# Project root is one level up from scripts/
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
-FREIBURG_DATA = _PROJECT_ROOT / 'data' / 'freiburg_groceries' / 'dataset'
 
 console = Console()
 
@@ -46,12 +49,7 @@ def parse_args():
     p.add_argument('--synthetic', action='store_true',
                    help='Use synthetic toy dataset (good for verifying training works)')
     p.add_argument('--data-dir', type=str, default=None,
-                   help='Path to image root (with images/ subdir or per-class subdirs)')
-    p.add_argument('--annot-dir', type=str, default=None,
-                   help='Path to annotation root (with .xml files or per-class subdirs). '
-                        'Defaults to <data-dir>/annotations if not set.')
-    p.add_argument('--class-names', nargs='+', default=None,
-                   help='Class names (only for VOC mode)')
+                    help='Path to a Roboflow export root containing data.yaml and train/valid splits')
     p.add_argument('--image-size', type=int, default=256)
     p.add_argument('--epochs', type=int, default=10)
     p.add_argument('--batch-size', type=int, default=4)
@@ -88,21 +86,45 @@ def build_datasets(args):
         n_train = len(full) - n_val
         train_ds, val_ds = random_split(full, [n_train, n_val],
                                          generator=torch.Generator().manual_seed(0))
-        return train_ds, val_ds, len(SyntheticFridgeDataset.CLASS_COLORS)
+        return train_ds, val_ds, len(SyntheticFridgeDataset.CLASS_COLORS), SyntheticFridgeDataset.CLASS_NAMES
     else:
         if args.data_dir is None:
-            args.data_dir = str(FREIBURG_DATA)
-            console.print(f"[dim]Using default data dir: {FREIBURG_DATA}[/dim]")
-        class_names = args.class_names or VOCDetectionDataset.FREIBURG_CLASSES
-        image_dir = args.data_dir
-        annot_dir = args.annot_dir or os.path.join(args.data_dir, 'annotations')
-        full = VOCDetectionDataset(image_dir, annot_dir, class_names,
-                                    image_size=args.image_size, augment=True)
-        n_val = max(1, int(0.1 * len(full)))
-        n_train = len(full) - n_val
-        train_ds, val_ds = random_split(full, [n_train, n_val],
-                                         generator=torch.Generator().manual_seed(0))
-        return train_ds, val_ds, len(class_names)
+            raise ValueError('Roboflow mode requires --data-dir pointing at a dataset root with data.yaml')
+
+        class_names, split_dirs = load_roboflow_data_config(args.data_dir)
+        train_image_dir = split_dirs['train']
+        train_label_dir = train_image_dir.with_name('labels')
+
+        valid_image_dir = split_dirs.get('valid') or split_dirs.get('val')
+        if valid_image_dir is not None:
+            valid_label_dir = valid_image_dir.with_name('labels')
+            train_ds = RoboflowDetectionDataset(
+                str(train_image_dir), str(train_label_dir), class_names,
+                image_size=args.image_size, augment=True,
+            )
+            val_ds = RoboflowDetectionDataset(
+                str(valid_image_dir), str(valid_label_dir), class_names,
+                image_size=args.image_size, augment=False,
+            )
+            return train_ds, val_ds, len(class_names), class_names
+
+        console.print('[yellow]No validation split found in data.yaml; falling back to 90/10 split from train.[/yellow]')
+        full_plain = RoboflowDetectionDataset(
+            str(train_image_dir), str(train_label_dir), class_names,
+            image_size=args.image_size, augment=False,
+        )
+        full_aug = RoboflowDetectionDataset(
+            str(train_image_dir), str(train_label_dir), class_names,
+            image_size=args.image_size, augment=True,
+        )
+        n_val = max(1, int(0.1 * len(full_plain)))
+        n_train = len(full_plain) - n_val
+        indices = torch.randperm(len(full_plain), generator=torch.Generator().manual_seed(0)).tolist()
+        train_indices = indices[:n_train]
+        val_indices = indices[n_train:]
+        train_ds = Subset(full_aug, train_indices)
+        val_ds = Subset(full_plain, val_indices)
+        return train_ds, val_ds, len(class_names), class_names
 
 
 def train_one_epoch(model, loader, optimizer, device, epoch, total_epochs):
@@ -172,7 +194,7 @@ def main():
     device = get_device()
 
     # Datasets
-    train_ds, val_ds, num_classes = build_datasets(args)
+    train_ds, val_ds, num_classes, class_names = build_datasets(args)
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
                                collate_fn=collate_fn, num_workers=args.num_workers)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False,
@@ -237,13 +259,15 @@ def main():
         # Checkpoint
         ckpt_path = os.path.join(args.checkpoint_dir, 'latest.pt')
         torch.save({'model': model.state_dict(), 'optimizer': optimizer.state_dict(),
-                    'epoch': epoch, 'num_classes': num_classes}, ckpt_path)
+                    'epoch': epoch, 'num_classes': num_classes,
+                    'class_names': class_names}, ckpt_path)
 
         star = ""
         if avg_score > best_score:
             best_score = avg_score
             best_path = os.path.join(args.checkpoint_dir, 'best.pt')
-            torch.save({'model': model.state_dict(), 'num_classes': num_classes}, best_path)
+            torch.save({'model': model.state_dict(), 'num_classes': num_classes,
+                        'class_names': class_names}, best_path)
             star = f"[bold green]★ best[/bold green]"
             console.print(f"  [bold green]★ New best saved →[/bold green] {best_path}")
 

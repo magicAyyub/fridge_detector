@@ -1,7 +1,6 @@
 # Fridge Detector, WhatIEat vision backend
 
-
-A PyTorch Implementation of Faster R-CNN for Grocery Item Detection in Fridge Images, built from scratch with a custom backbone and FPN.
+A PyTorch Faster R-CNN implementation for grocery detection in real fridge scenes, trained from a Roboflow dataset export and served to the WhatIEat mobile app.
 
 ---
 
@@ -19,12 +18,14 @@ fridge_detector/
 │   ├── box_ops.py             # IoU, encoding/decoding offsets, format conversions
 │   ├── anchors.py             # Anchor generator (multi-scale, multi-aspect-ratio)
 ├── data/
-│   └── dataset.py             # VOC-format loader + synthetic dataset for testing
+│   └── dataset.py             # Roboflow/YOLO loader + synthetic dataset for testing
 ├── scripts/
 │   ├── test_utils.py          # Unit tests for the utilities
 │   ├── smoke_test.py          # End-to-end forward+backward pass test
 │   ├── train.py               # Training loop with logging & checkpointing
-│   └── predict.py             # Inference + visualization
+│   ├── predict.py             # Inference + visualization
+│   ├── serve_api.py           # FastAPI inference backend for WhatIEat
+│   └── download_roboflow.py   # Download Roboflow export with your API key
 └── README.md
 ```
 
@@ -49,31 +50,83 @@ python scripts/predict.py --checkpoint checkpoints/best.pt \
     --output prediction.png
 ```
 
+## Roboflow Dataset Workflow
+
+This project now uses a single real-fridge dataset workflow based on a Roboflow export in YOLO format.
+
+1. Export your API key:
+```bash
+export ROBOFLOW_API_KEY=your_api_key_here
+```
+
+2. Download the dataset:
+```bash
+uv run python scripts/download_roboflow.py \
+   --workspace practicum-ziryz \
+   --project fridge-dataset-oi7ld \
+   --version 1
+```
+
+This downloads a dataset root like:
+
+```text
+data/roboflow/
+   data.yaml
+   train/images/
+   train/labels/
+   valid/images/
+   valid/labels/
+```
+
+3. Train locally:
+```bash
+uv run python scripts/train.py \
+   --config configs/local.yaml \
+   --data-dir data/roboflow
+```
+
+`data.yaml` is the source of truth for class names and split paths. There is no separate XML/VOC path anymore.
+
 ## Kaggle Training
 
-Note : Change `magicayyub` to your Kaggle username in the paths below.
-The notebook is in the root of the project as fridge_detector.ipynb.
+Use `fridge-detector.ipynb` after uploading only the source-code dataset for this repo.
 
-`Before running, attach these 3 datasets to this notebook`:
+Before running the notebook on Kaggle:
 
-1. **Source code**, zip and upload your project:
-```bash
-zip -r fridge_detector_src.zip src/ scripts/ configs/ pyproject.toml -x '*.pyc' -x '__pycache__/*'
+1. Enable Internet in the notebook session.
+2. Add a Kaggle secret named `ROBOFLOW_API_KEY`.
+3. Upload this repo as a Kaggle dataset so it is mounted at a path like `/kaggle/input/fridge-detector`.
+
+Then set the source path in notebook cell 1. The dataset path stays in `/kaggle/working` because the notebook downloads it directly from Roboflow:
+
+```python
+SRC_DIR = '/kaggle/input/fridge-detector'
+DATA_DIR = '/kaggle/working/data/roboflow'
 ```
-   Upload on kaggle.com: Datasets → New Dataset → `fridge_detector_src.zip`
-   → Kaggle mounts at: `/kaggle/input/datasets/magicayyub/fridge-detector/`
 
-2. **Images**, use the existing public dataset (images only):
-   https://www.kaggle.com/datasets/mayarmohamedswilam/freiburg-groceries
-   → Kaggle mounts at: `/kaggle/input/datasets/mayarmohamedswilam/freiburg-groceries/images/`
+The notebook will first run:
 
-3. **Annotations**, use the existing public dataset (XML files, 19 MB):
-   https://www.kaggle.com/datasets/magicayyub/freiburg-groceries-annotations
-   → Kaggle mounts at: `/kaggle/input/datasets/magicayyub/freiburg-groceries-annotations/annotations/`
+```bash
+python /kaggle/input/fridge-detector/scripts/download_roboflow.py \
+   --workspace practicum-ziryz \
+   --project fridge-dataset-oi7ld \
+   --version 1 \
+   --output-dir /kaggle/working/data/roboflow
+```
+
+Then the training cell will run:
+
+```bash
+python /kaggle/input/fridge-detector/scripts/train.py \
+   --config /kaggle/input/fridge-detector/configs/kaggle.yaml \
+   --data-dir /kaggle/working/data/roboflow
+```
+
+Checkpoints are written to `/kaggle/working/checkpoints`.
 
 ## API Serving
 
-After training on kaggle, download the two output files and place them in the `checkpoints/` directory, then run the inference API:
+After training, place the chosen checkpoint in `checkpoints/` and run the inference API:
 
 ```bash
 uv run python scripts/serve_api.py --checkpoint checkpoints/best.pt --host 0.0.0.0 --port 8000
@@ -81,4 +134,4 @@ uv run python scripts/serve_api.py --checkpoint checkpoints/best.pt --host 0.0.0
 
 ## Future work
 
-add more classe detection throught new dataset and add variation of images to make the model more robust and accurate.
+Improve robustness with more fridge scenes, more lighting variation, and a larger product vocabulary.

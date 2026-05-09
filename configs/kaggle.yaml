@@ -1,9 +1,9 @@
 # Kaggle training config (T4/P100 GPU — 16 GB VRAM)
-# Run inside Kaggle notebook:
-#   !python /kaggle/input/fridge-detector/scripts/train.py --config /kaggle/input/fridge-detector/configs/kaggle.yaml
+# Run inside the updated notebook with:
+#   python /kaggle/input/fridge-detector/scripts/train.py \
+#       --config /kaggle/input/fridge-detector/configs/kaggle.yaml \
+#       --data-dir /kaggle/input/<your-roboflow-dataset>
 
-data_dir:  /kaggle/input/freiburg-groceries
-annot_dir: /kaggle/input/freiburg-groceries-annotations/annotations
 backbone: resnet50
 fpn_channels: 256
 image_size: 512
