@@ -1,0 +1,15 @@
+# Kaggle training config (T4/P100 GPU — 16 GB VRAM)
+# Run inside Kaggle notebook:
+#   !python /kaggle/input/fridge-detector/scripts/train.py --config /kaggle/input/fridge-detector/configs/kaggle.yaml
+
+data_dir:  /kaggle/input/freiburg-groceries
+annot_dir: /kaggle/input/freiburg-groceries-annotations/annotations
+backbone: resnet50
+fpn_channels: 256
+image_size: 512
+epochs: 50
+batch_size: 16
+lr: 1.0e-4
+weight_decay: 1.0e-4
+num_workers: 4
+checkpoint_dir: /kaggle/working/checkpoints

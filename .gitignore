@@ -10,3 +10,8 @@ wheels/
 .venv
 
 checkpoints/
+
+# Datasets
+data/
+outputs/
+fridge_detector_src.zip

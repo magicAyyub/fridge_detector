@@ -23,7 +23,19 @@ import torchvision.transforms.functional as TF
 
 
 class VOCDetectionDataset(Dataset):
-    """Pascal-VOC-style dataset (XML annotations)."""
+    """Pascal-VOC-style dataset (XML annotations).
+
+    Works with both flat directories and nested per-class subdirectories
+    (e.g. annotations/beans/*.xml + images/beans/*.png).
+    """
+
+    # Freiburg Groceries Dataset — 25 classes
+    FREIBURG_CLASSES = [
+        'beans', 'cake', 'candy', 'cereal', 'chips', 'chocolate', 'coffee',
+        'corn', 'fish', 'flour', 'honey', 'jam', 'juice', 'milk', 'nuts',
+        'oil', 'pasta', 'rice', 'soda', 'spices', 'sugar', 'tea',
+        'tomato_sauce', 'vinegar', 'water',
+    ]
 
     def __init__(self, image_dir: str, annot_dir: str, class_names: list,
                  image_size: int = 512, augment: bool = False):
@@ -34,17 +46,31 @@ class VOCDetectionDataset(Dataset):
         self.image_size = image_size
         self.augment = augment
 
-        # Index all valid (image, annot) pairs
+        # Build a case-insensitive index of all images on disk so we can
+        # match annotation subdirs like "beans/" against image subdirs like "BEANS/".
+        img_index: dict[str, str] = {}  # lowercase relative path → actual path
+        for dirpath, _, filenames in os.walk(image_dir):
+            for fname in filenames:
+                if not fname.lower().endswith(('.jpg', '.jpeg', '.png')):
+                    continue
+                full = os.path.join(dirpath, fname)
+                rel = os.path.relpath(full, image_dir).lower()
+                img_index[rel] = full
+
+        # Walk all subdirectories to support nested per-class layouts
         self.samples = []
-        for fname in sorted(os.listdir(annot_dir)):
-            if not fname.endswith('.xml'):
-                continue
-            stem = fname[:-4]
-            for ext in ['.jpg', '.jpeg', '.png', '.JPG', '.JPEG', '.PNG']:
-                img_path = os.path.join(image_dir, stem + ext)
-                if os.path.exists(img_path):
-                    self.samples.append((img_path, os.path.join(annot_dir, fname)))
-                    break
+        for dirpath, _, filenames in os.walk(annot_dir):
+            rel_dir = os.path.relpath(dirpath, annot_dir)
+            for fname in sorted(filenames):
+                if not fname.endswith('.xml'):
+                    continue
+                stem = fname[:-4]
+                xml_path = os.path.join(dirpath, fname)
+                for ext in ['.jpg', '.jpeg', '.png']:
+                    key = os.path.join(rel_dir, stem + ext).lower()
+                    if key in img_index:
+                        self.samples.append((img_index[key], xml_path))
+                        break
 
     def __len__(self):
         return len(self.samples)

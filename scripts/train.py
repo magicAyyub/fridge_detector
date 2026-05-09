@@ -17,6 +17,8 @@ import os
 import time
 from pathlib import Path
 
+import yaml
+
 import torch
 from torch.utils.data import DataLoader, random_split
 from rich.console import Console
@@ -30,15 +32,24 @@ from models.detector import FridgeDetector
 from utils import get_device
 from data.dataset import (SyntheticFridgeDataset, VOCDetectionDataset, collate_fn)
 
+# Project root is one level up from scripts/
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+FREIBURG_DATA = _PROJECT_ROOT / 'data' / 'freiburg_groceries' / 'dataset'
+
 console = Console()
 
 
 def parse_args():
     p = argparse.ArgumentParser()
+    p.add_argument('--config', type=str, default=None,
+                   help='Path to a YAML config file (configs/local.yaml, configs/kaggle.yaml, ...)')
     p.add_argument('--synthetic', action='store_true',
                    help='Use synthetic toy dataset (good for verifying training works)')
     p.add_argument('--data-dir', type=str, default=None,
-                   help='Path to VOC dataset root with images/ and annotations/ subdirs')
+                   help='Path to image root (with images/ subdir or per-class subdirs)')
+    p.add_argument('--annot-dir', type=str, default=None,
+                   help='Path to annotation root (with .xml files or per-class subdirs). '
+                        'Defaults to <data-dir>/annotations if not set.')
     p.add_argument('--class-names', nargs='+', default=None,
                    help='Class names (only for VOC mode)')
     p.add_argument('--image-size', type=int, default=256)
@@ -55,6 +66,17 @@ def parse_args():
                    help='Backbone architecture (resnet18 = lightweight)')
     p.add_argument('--fpn-channels', type=int, default=256,
                    help='Channel count for FPN levels (lower = lighter)')
+
+    # First pass: load config file and use its values as defaults.
+    # Explicit CLI args always win because set_defaults only sets the default,
+    # not an actual parsed value.
+    preliminary, _ = p.parse_known_args()
+    if preliminary.config:
+        with open(preliminary.config) as f:
+            cfg = yaml.safe_load(f) or {}
+        # Argparse uses underscores; YAML keys may use hyphens or underscores
+        p.set_defaults(**{k.replace('-', '_'): v for k, v in cfg.items()})
+
     return p.parse_args()
 
 
@@ -68,17 +90,19 @@ def build_datasets(args):
                                          generator=torch.Generator().manual_seed(0))
         return train_ds, val_ds, len(SyntheticFridgeDataset.CLASS_COLORS)
     else:
-        if args.data_dir is None or args.class_names is None:
-            raise ValueError("--data-dir and --class-names required for real training")
-        image_dir = os.path.join(args.data_dir, 'images')
-        annot_dir = os.path.join(args.data_dir, 'annotations')
-        full = VOCDetectionDataset(image_dir, annot_dir, args.class_names,
+        if args.data_dir is None:
+            args.data_dir = str(FREIBURG_DATA)
+            console.print(f"[dim]Using default data dir: {FREIBURG_DATA}[/dim]")
+        class_names = args.class_names or VOCDetectionDataset.FREIBURG_CLASSES
+        image_dir = args.data_dir
+        annot_dir = args.annot_dir or os.path.join(args.data_dir, 'annotations')
+        full = VOCDetectionDataset(image_dir, annot_dir, class_names,
                                     image_size=args.image_size, augment=True)
         n_val = max(1, int(0.1 * len(full)))
         n_train = len(full) - n_val
         train_ds, val_ds = random_split(full, [n_train, n_val],
                                          generator=torch.Generator().manual_seed(0))
-        return train_ds, val_ds, len(args.class_names)
+        return train_ds, val_ds, len(class_names)
 
 
 def train_one_epoch(model, loader, optimizer, device, epoch, total_epochs):

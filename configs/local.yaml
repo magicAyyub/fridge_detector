@@ -1,0 +1,12 @@
+# Local training config (MacBook M3 — MPS)
+# Run: uv run python scripts/train.py --config configs/local.yaml
+
+backbone: resnet50
+fpn_channels: 256
+image_size: 512
+epochs: 30
+batch_size: 4
+lr: 1.0e-4
+weight_decay: 1.0e-4
+num_workers: 0          # MPS works best with 0 workers
+checkpoint_dir: checkpoints/

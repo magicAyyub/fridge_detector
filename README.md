@@ -2,7 +2,7 @@
 
 A custom two-stage object detector for ingredient recognition, built from scratch in PyTorch.
 
-The only "borrowed" component is the pre-trained ImageNet backbone (ResNet50 or ResNet18). Everything else — Feature Pyramid Network, Region Proposal Network, RoI Align, anchor generation, NMS, detection head, training loop — is implemented from first principles to demonstrate understanding of the full detection stack.
+The only "borrowed" component is the pre-trained ImageNet backbone (ResNet50 or ResNet18). Everything else : Feature Pyramid Network, Region Proposal Network, RoI Align, anchor generation, NMS, detection head and training loop are implemented from scratch.
 
 ---
 
@@ -12,15 +12,13 @@ The only "borrowed" component is the pre-trained ImageNet backbone (ResNet50 or 
 fridge_detector/
 ├── models/
 │   ├── backbone.py            # Pre-trained ResNet (the only borrowed piece)
-│   ├── fpn.py                 # Feature Pyramid Network — built from scratch
-│   ├── rpn.py                 # Region Proposal Network — built from scratch
+│   ├── fpn.py                 # Feature Pyramid Network 
+│   ├── rpn.py                 # Region Proposal Network 
 │   ├── detection_head.py      # Second-stage classifier + box regressor
 │   └── detector.py            # Top-level model wiring it all together
 ├── utils/
 │   ├── box_ops.py             # IoU, encoding/decoding offsets, format conversions
 │   ├── anchors.py             # Anchor generator (multi-scale, multi-aspect-ratio)
-│   ├── nms.py                 # Non-Maximum Suppression — built from scratch
-│   └── roi_align.py           # RoI Align with bilinear sampling
 ├── data/
 │   └── dataset.py             # VOC-format loader + synthetic dataset for testing
 ├── scripts/
@@ -164,45 +162,3 @@ The total loss is a sum of four:
 | `box_loss` | Refine proposal coordinates per class | Smooth L1 (positives only) |
 
 Watch them all decrease during training. If `rpn_obj_loss` stays high, your anchor sizes probably don't match your data. If `cls_loss` stays high but RPN losses drop, the second stage isn't getting good proposals.
-
----
-
-## Results from the Smoke Run
-
-After 3 epochs on the synthetic dataset (CPU, ResNet18 + FPN64):
-
-| Epoch | Total loss | Detections / image | Mean confidence |
-|---:|---:|---:|---:|
-| 1 | 1.08 | 82.8 | 0.25 |
-| 2 | 0.39 | 17.6 | 0.48 |
-| 3 | 0.25 | 9.3 | 0.58 |
-
-The model is clearly learning: total loss drops 4×, confidence doubles, and the model stops spamming detections (it's learning what's *not* an object).
-
----
-
-## Mobile Deployment Notes
-
-For the actual mobile app:
-- Switch backbone to MobileNetV3 (depthwise separable convolutions, ~5× fewer params than ResNet50).
-- Reduce `fpn_channels` to 64 or 128.
-- Export to ONNX, then convert to TFLite (Android) or Core ML (iOS).
-- Quantize to INT8 — Faster R-CNN-style detectors can usually take 4-bit / 8-bit weights with minimal accuracy loss after post-training quantization.
-- Consider replacing the two-stage architecture with a single-stage anchor-based head (RetinaNet-style) on top of the same FPN — same backbone, much faster inference.
-
----
-
-## What This Demonstrates
-
-| Component | Built? | Skill demonstrated |
-|---|:---:|---|
-| ResNet backbone | borrowed (allowed) | Understanding which layers to use, how to truncate, how to handle frozen BN |
-| FPN | ✅ from scratch | Multi-scale feature fusion, lateral connections, top-down pathway |
-| Anchor generator | ✅ from scratch | Coordinate systems, stride math, anchor parameterization |
-| RPN | ✅ from scratch | Anchor matching, sample balancing, objectness + regression heads |
-| RoI Align | ✅ from scratch | Bilinear sampling, sub-pixel alignment, `grid_sample` mechanics |
-| Detection head | ✅ from scratch | Multi-task heads, per-class regression, FPN level routing |
-| NMS | ✅ from scratch | Greedy suppression, IoU-based filtering, multi-class variant |
-| Training loop | ✅ from scratch | Multi-task loss, sampling, gradient clipping, LR scheduling |
-
-Every component can be inspected, tested in isolation, and modified — there are no opaque black boxes.
