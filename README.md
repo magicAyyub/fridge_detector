@@ -6,31 +6,6 @@ The only "borrowed" component is the pre-trained ImageNet backbone (ResNet50 or 
 
 ---
 
-## Project Structure
-
-```
-fridge_detector/
-├── models/
-│   ├── backbone.py            # Pre-trained ResNet (the only borrowed piece)
-│   ├── fpn.py                 # Feature Pyramid Network 
-│   ├── rpn.py                 # Region Proposal Network 
-│   ├── detection_head.py      # Second-stage classifier + box regressor
-│   └── detector.py            # Top-level model wiring it all together
-├── utils/
-│   ├── box_ops.py             # IoU, encoding/decoding offsets, format conversions
-│   ├── anchors.py             # Anchor generator (multi-scale, multi-aspect-ratio)
-├── data/
-│   └── dataset.py             # VOC-format loader + synthetic dataset for testing
-├── scripts/
-│   ├── test_utils.py          # Unit tests for the utilities
-│   ├── smoke_test.py          # End-to-end forward+backward pass test
-│   ├── train.py               # Training loop with logging & checkpointing
-│   └── predict.py             # Inference + visualization
-└── README.md
-```
-
----
-
 ## Architecture
 
 ```
@@ -76,16 +51,16 @@ fridge_detector/
 
 ## How Each Component Works
 
-### 1. Backbone (`backbone.py`) — borrowed
+### Backbone (`backbone.py`) 
 A pre-trained ResNet with the classification head chopped off. Outputs four feature maps at strides 4, 8, 16, 32. We freeze the stem and `layer1` and BatchNorm running statistics — standard practice for fine-tuning detection on top of an ImageNet model.
 
-### 2. FPN (`fpn.py`) — from scratch
+### FPN (`fpn.py`) 
 Implements the classic top-down FPN. Lateral 1×1 convolutions project each backbone level to 256 channels, then we add 2× upsampled higher levels and apply a 3×3 conv to clean up. The result: every output level (P2..P5) has the same channel count and rich semantics — small objects use P2, large ones use P5.
 
-### 3. Anchor Generator (`utils/anchors.py`) — from scratch
+### Anchor Generator (`utils/anchors.py`)
 For each FPN level, generates anchor templates at the configured sizes and aspect ratios, then tiles them across the spatial grid in image coordinates. With 4 levels × 1 size × 3 aspect ratios = 3 anchors per cell per level. For a 192×192 image, that's roughly 9,500 anchors total.
 
-### 4. RPN (`rpn.py`) — from scratch
+### RPN (`rpn.py`) 
 The first stage. A small head (3×3 conv → two 1×1 sibling convs) predicts:
 - An **objectness score** per anchor (binary: foreground or background)
 - **Box offsets** (tx, ty, tw, th) refining each anchor
@@ -94,36 +69,59 @@ Training: each anchor is matched to a ground-truth box by IoU (≥0.7 = positive
 
 Inference: for each level, take the top-K anchors by objectness, decode to image-space boxes, clip, drop tiny boxes, run NMS.
 
-### 5. RoI Align (`utils/roi_align.py`) — from scratch
+### RoI Align (`utils/roi_align.py`)
 The classic Mask R-CNN trick that fixes RoI Pool's quantization error. For each proposal, we build a sampling grid (`sampling_ratio × sampling_ratio` points per output bin) in feature-map coordinates, run bilinear interpolation via `grid_sample`, then average across each bin. Output: a fixed-size 7×7×C feature volume per proposal, regardless of the proposal's original size.
 
-### 6. Detection Head (`detection_head.py`) — from scratch
+### Detection Head (`detection_head.py`)
 Two FC layers + two output heads (class scores over `C+1`, per-class box offsets `C×4`). Includes:
 - **Per-FPN-level RoI assignment**: small proposals → P2, large → P5 (via the FPN paper's formula `level = floor(4 + log2(√(w·h)/224))`).
 - **Proposal sampling**: 128 per image, 25% positive (IoU ≥ 0.5 with a GT) + 75% background.
 - **GT augmentation**: GT boxes are added to the proposal set during training to guarantee positive samples.
 
-### 7. NMS (`utils/nms.py`) — from scratch
+### NMS (`utils/nms.py`) 
 Sort by score → keep best → suppress overlapping (IoU > threshold) → repeat. Includes a `batched_nms` variant that handles multi-class NMS by shifting boxes per class so they can't suppress each other across classes.
 
 ---
 
+## Project Structure
+
+```
+fridge_detector/
+├── models/
+│   ├── backbone.py            # Pre-trained ResNet (the only borrowed piece)
+│   ├── fpn.py                 # Feature Pyramid Network 
+│   ├── rpn.py                 # Region Proposal Network 
+│   ├── detection_head.py      # Second-stage classifier + box regressor
+│   └── detector.py            # Top-level model wiring it all together
+├── utils/
+│   ├── box_ops.py             # IoU, encoding/decoding offsets, format conversions
+│   ├── anchors.py             # Anchor generator (multi-scale, multi-aspect-ratio)
+├── data/
+│   └── dataset.py             # VOC-format loader + synthetic dataset for testing
+├── scripts/
+│   ├── test_utils.py          # Unit tests for the utilities
+│   ├── smoke_test.py          # End-to-end forward+backward pass test
+│   ├── train.py               # Training loop with logging & checkpointing
+│   └── predict.py             # Inference + visualization
+└── README.md
+```
+
 ## How to Run
 
-### Quick start (synthetic data — no downloads needed)
+### Quick start (synthetic data)
 
 ```bash
-# 1. Test the utilities (IoU, anchors, NMS, RoI Align)
+# Test the utilities (IoU, anchors, NMS, RoI Align)
 python scripts/test_utils.py
 
-# 2. End-to-end smoke test (forward + backward)
+# End-to-end smoke test (forward + backward)
 python scripts/smoke_test.py
 
-# 3. Train on the synthetic toy dataset (verifies everything learns)
+# Train on the synthetic toy dataset (verifies everything learns)
 python scripts/train.py --synthetic --epochs 5 --batch-size 4 \
     --backbone resnet18 --fpn-channels 64 --image-size 192
 
-# 4. Run inference and visualize
+# Run inference and visualize
 python scripts/predict.py --checkpoint checkpoints/best.pt \
     --backbone resnet18 --fpn-channels 64 --image-size 192 \
     --output prediction.png
