@@ -538,6 +538,7 @@ dependencies = [
     { name = "pyyaml" },
     { name = "rich" },
     { name = "roboflow" },
+    { name = "segment-anything" },
     { name = "torch" },
     { name = "torchvision" },
     { name = "uvicorn" },
@@ -551,6 +552,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "rich", specifier = ">=13.0" },
     { name = "roboflow", specifier = ">=1.1.48" },
+    { name = "segment-anything", specifier = ">=1.0" },
     { name = "torch", specifier = ">=2.11.0" },
     { name = "torchvision", specifier = ">=0.26.0" },
     { name = "uvicorn", specifier = ">=0.34.0" },
@@ -1829,6 +1831,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/3b/ba/1adb8e2a63958caaf0105a28cca2014f0aa81978b16d7367afa8b6d181a7/roboflow-1.3.8.tar.gz", hash = "sha256:bec6ef6e26ab266f016b69f580476138e62e6633ab28d96644ab740569beaffe", size = 179801, upload-time = "2026-05-06T14:21:23.287Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ee/84/3765db84f748be8e19047e050e117babaaee9738c74ea5348601e0c22767/roboflow-1.3.8-py3-none-any.whl", hash = "sha256:fe081e8d23196cd8c1afc7a07bcc2f6130784a7b78ed04a3ad987bb38bb5ba41", size = 207925, upload-time = "2026-05-06T14:21:21.27Z" },
+]
+
+[[package]]
+name = "segment-anything"
+version = "1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/4f/88/7725f418f2bb4a7ac2e5e8295fbbca2900c70c8fe5ba48b3aff5788af9a2/segment_anything-1.0.tar.gz", hash = "sha256:ed0c9f6fb07bbef9c6238a7028a13c8272f1ba6b6305ca73e3e064266503736b", size = 31191, upload-time = "2023-04-06T18:04:40.816Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/75/77/8e0c16abf151a1dd076b562febc0da2ecf1132b0b41826087af96f101f42/segment_anything-1.0-py3-none-any.whl", hash = "sha256:86f67d417a915823c3302098effe9008b688945772517310956bb49de0e7f02e", size = 36560, upload-time = "2023-04-06T18:04:38.834Z" },
 ]
 
 [[package]]

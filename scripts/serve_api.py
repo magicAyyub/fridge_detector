@@ -16,7 +16,10 @@ import io
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
+import cv2
+import numpy as np
 import torch
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,6 +32,161 @@ sys.path.insert(0, str(ROOT / 'src'))
 
 from models.detector import FridgeDetector
 from utils import get_device
+
+
+class SamBoxSegmenter:
+    """Optional SAM segmenter prompted by detector boxes.
+
+    Enabled by setting environment variables:
+      SAM_CHECKPOINT=/path/to/sam_checkpoint.pth
+      SAM_MODEL_TYPE=vit_b|vit_l|vit_h
+    """
+
+    def __init__(self) -> None:
+        self.enabled = False
+        self.status = 'disabled'
+        self._predictor = None
+
+        ckpt = os.environ.get('SAM_CHECKPOINT')
+        model_type = os.environ.get('SAM_MODEL_TYPE', 'vit_b')
+        if not ckpt:
+            self.status = 'SAM_CHECKPOINT not set'
+            return
+        ckpt_path = Path(ckpt).expanduser().resolve()
+        if not ckpt_path.exists():
+            self.status = f'SAM_CHECKPOINT not found: {ckpt_path}'
+            return
+
+        try:
+            from segment_anything import SamPredictor, sam_model_registry
+        except Exception as exc:  # pragma: no cover - optional dependency
+            self.status = f'segment_anything import failed: {exc}'
+            return
+
+        if model_type not in sam_model_registry:
+            self.status = f'Unknown SAM_MODEL_TYPE: {model_type}'
+            return
+
+        try:
+            sam_device = 'cuda' if torch.cuda.is_available() else 'cpu'
+            sam = sam_model_registry[model_type](checkpoint=str(ckpt_path))
+            sam.to(device=sam_device)
+            # Predictor: encode image once, then run fast decoder per box.
+            # Much faster than AMG which runs a full 8x8 grid scan per crop.
+            self._predictor = SamPredictor(sam)
+            self.enabled = True
+            self.status = f'Predictor enabled ({model_type} on {sam_device})'
+        except Exception as exc:  # pragma: no cover - runtime env dependent
+            self.status = f'init failed: {exc}'
+
+    @staticmethod
+    def _mask_to_polygon(mask: np.ndarray) -> list[list[float]] | None:
+        contour_data = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours = contour_data[0] if len(contour_data) == 2 else contour_data[1]
+        if not contours:
+            return None
+
+        contour = max(contours, key=cv2.contourArea)
+        if cv2.contourArea(contour) < 8:
+            return None
+
+        epsilon = max(1.5, 0.01 * cv2.arcLength(contour, True))
+        approx = cv2.approxPolyDP(contour, epsilon, True)
+        if approx.shape[0] < 3:
+            return None
+
+        points = [[float(p[0][0]), float(p[0][1])] for p in approx]
+        return points
+
+    @staticmethod
+    def _mask_iou(a: np.ndarray, b: np.ndarray) -> float:
+        inter = int((a & b).sum())
+        union = int((a | b).sum())
+        return inter / max(1, union)
+
+    def segment_all_classes(
+        self, image_rgb: np.ndarray, by_class: dict[str, list[dict[str, Any]]]
+    ) -> dict[str, tuple[int, list[dict[str, Any]]]]:
+        """Encode the image ONCE, then run a fast SAM decoder call per FRCNN box.
+
+        Why this is faster than the old AMG approach:
+          AMG (old): N classes × 64-point scan = N expensive encode+decode passes.
+          This:       1 encode (slow, ~2-4s) + M fast decoder calls (~50ms each).
+
+        Accuracy: each FRCNN box constrains SAM spatially → no background masks.
+        Mask IoU NMS removes any duplicate masks when FRCNN double-detected one object
+        (this is why garlic was showing ×2 — two FRCNN boxes, one object).
+        """
+        if not self.enabled:
+            return {name: (len(dets), list(dets)) for name, dets in by_class.items()}
+
+        assert self._predictor is not None
+
+        # ONE expensive encode for the whole image — all classes share these features
+        self._predictor.set_image(image_rgb)
+
+        results: dict[str, tuple[int, list[dict[str, Any]]]] = {}
+        for class_name, class_dets in by_class.items():
+            best_score = max(d['score'] for d in class_dets)
+
+            # One fast SAM decode per FRCNN box (image already encoded above)
+            raw: list[tuple[np.ndarray, float]] = []
+            for det in class_dets:
+                b = det['box']
+                box = np.array([b['x1'], b['y1'], b['x2'], b['y2']], dtype=np.float32)
+                try:
+                    masks, iou_preds, _ = self._predictor.predict(
+                        box=box[None],
+                        multimask_output=True,
+                    )
+                except Exception:
+                    continue
+                best_idx = int(np.argmax(iou_preds))
+                if iou_preds[best_idx] < 0.7:
+                    continue
+                raw.append((masks[best_idx], float(iou_preds[best_idx])))
+
+            if not raw:
+                results[class_name] = (len(class_dets), list(class_dets))
+                continue
+
+            # Mask IoU NMS: if FRCNN double-detected one object, their SAM masks
+            # will heavily overlap → keep only the highest-score one.
+            raw.sort(key=lambda t: t[1], reverse=True)
+            kept_masks: list[np.ndarray] = []
+            for mask, _ in raw:
+                if any(self._mask_iou(mask, km) > 0.5 for km in kept_masks):
+                    continue
+                kept_masks.append(mask)
+
+            # Build one detection dict per surviving mask
+            instance_dets: list[dict[str, Any]] = []
+            for mask in kept_masks:
+                polygon = self._mask_to_polygon(mask)
+                if polygon is None:
+                    continue
+                rows = np.where(np.any(mask, axis=1))[0]
+                cols = np.where(np.any(mask, axis=0))[0]
+                if rows.size == 0 or cols.size == 0:
+                    continue
+                box_out = {
+                    'x1': float(cols[0]), 'y1': float(rows[0]),
+                    'x2': float(cols[-1]), 'y2': float(rows[-1]),
+                }
+                instance_dets.append({
+                    'name': class_name,
+                    'score': best_score,
+                    'box': box_out,
+                    'mask': {'polygon': polygon, 'area': int(mask.sum()), 'source': 'sam-box'},
+                })
+
+            if not instance_dets:
+                results[class_name] = (len(class_dets), list(class_dets))
+                continue
+
+            results[class_name] = (len(instance_dets), instance_dets)
+
+        return results
 
 
 def parse_args() -> argparse.Namespace:
@@ -61,19 +219,21 @@ def build_model(args: argparse.Namespace, device: torch.device) -> tuple[FridgeD
     return model, class_names
 
 
-def image_to_tensor(data: bytes, image_size: int, device: torch.device) -> torch.Tensor:
+def image_to_tensor(data: bytes, image_size: int, device: torch.device) -> tuple[torch.Tensor, np.ndarray]:
     try:
         image = Image.open(io.BytesIO(data)).convert('RGB')
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f'Invalid image file: {exc}') from exc
 
     image = image.resize((image_size, image_size), Image.BILINEAR)
-    return TF.to_tensor(image).unsqueeze(0).to(device)
+    image_np = np.asarray(image, dtype=np.uint8)
+    return TF.to_tensor(image).unsqueeze(0).to(device), image_np
 
 
 def app_factory(args: argparse.Namespace) -> FastAPI:
     device = get_device()
     model, class_names = build_model(args, device)
+    sam_segmenter = SamBoxSegmenter()
 
     app = FastAPI(title='Fridge Detector API', version='1.0.0')
 
@@ -91,6 +251,7 @@ def app_factory(args: argparse.Namespace) -> FastAPI:
             'status': 'ok',
             'device': str(device),
             'checkpoint': os.path.abspath(args.checkpoint),
+            'sam': {'enabled': sam_segmenter.enabled, 'status': sam_segmenter.status},
         }
 
     @app.post('/vision/scan')
@@ -98,12 +259,13 @@ def app_factory(args: argparse.Namespace) -> FastAPI:
         file: UploadFile = File(...),
         score_threshold: float = Query(0.35, ge=0.0, le=1.0),
         target_class: str | None = Query(None),
+        include_masks: bool = Query(True),
     ) -> dict:
         content = await file.read()
         if not content:
             raise HTTPException(status_code=400, detail='Empty file upload')
 
-        image_tensor = image_to_tensor(content, args.image_size, device)
+        image_tensor, image_np = image_to_tensor(content, args.image_size, device)
 
         with torch.no_grad():
             detections, _ = model(image_tensor)
@@ -114,8 +276,9 @@ def app_factory(args: argparse.Namespace) -> FastAPI:
         labels = det['labels'].cpu()
 
         target = target_class.lower().strip() if target_class else None
-        best_by_name: dict[str, float] = {}
-        detections_payload: list[dict] = []
+
+        # Step 1: collect all FRCNN detections above threshold, grouped by class
+        by_class: dict[str, list[dict]] = {}
         for box, score, label in zip(boxes, scores, labels):
             s = float(score.item())
             if s < score_threshold:
@@ -126,34 +289,37 @@ def app_factory(args: argparse.Namespace) -> FastAPI:
             name = class_names[idx]
             if target and name != target:
                 continue
-
             x1, y1, x2, y2 = [float(v) for v in box.tolist()]
-            detections_payload.append(
-                {
-                    'name': name,
-                    'score': s,
-                    'box': {'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2},
-                }
+            by_class.setdefault(name, []).append(
+                {'name': name, 'score': s, 'box': {'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2}}
             )
 
-            prev = best_by_name.get(name, 0.0)
-            if s > prev:
-                best_by_name[name] = s
+        # Step 2: per class — FRCNN gives the zone, SAM counts instances inside
+        # (falls back to FRCNN box count when SAM is disabled or include_masks=False)
+        final_detections: list[dict] = []
+        ingredients: list[dict] = []
+        best_score_by_name: dict[str, float] = {
+            name: max(d['score'] for d in dets) for name, dets in by_class.items()
+        }
 
-        ingredients = [
-            {
-                'id': name,
-                'name': name,
-                'quantity': f'{conf:.2f}',
-            }
-            for name, conf in sorted(best_by_name.items(), key=lambda kv: kv[1], reverse=True)
-        ]
+        # Encode image once, segment all classes in a single pass
+        if include_masks and sam_segmenter.enabled:
+            class_results = sam_segmenter.segment_all_classes(image_np, by_class)
+        else:
+            class_results = {name: (len(dets), list(dets)) for name, dets in by_class.items()}
 
-        confidence = max(best_by_name.values()) if best_by_name else 0.0
+        for name, (count, instance_dets) in sorted(
+            class_results.items(), key=lambda kv: best_score_by_name[kv[0]], reverse=True
+        ):
+            final_detections.extend(instance_dets)
+            ingredients.append({'id': name, 'name': name, 'quantity': str(count)})
+
+        detections_payload = final_detections
+        confidence = max(best_score_by_name.values()) if best_score_by_name else 0.0
         return {
             'ingredients': ingredients,
             'confidence': confidence,
-            'detections': sorted(detections_payload, key=lambda d: d['score'], reverse=True),
+            'detections': sorted(final_detections, key=lambda d: d['score'], reverse=True),
         }
 
     return app
