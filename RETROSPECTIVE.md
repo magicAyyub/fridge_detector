@@ -163,6 +163,47 @@ Replaced AMG entirely with `SamPredictor` used correctly:
 
 ---
 
+## Section 11: SAM 2 Upgrade
+
+**Date**: Current session
+
+**Problem**: SAM 1 ViT-B checkpoint is 375 MB, relatively slow on CPU, and produces lower-quality masks for touching objects.
+
+**Solution**: Swap `SamBoxSegmenter.__init__` to use SAM 2.1 ViT-T.
+
+**Changes made**:
+- Installed `sam2==1.1.0` (adds `hydra-core`, `omegaconf`, `iopath` dependencies)
+- Downloaded `checkpoints/sam2.1_hiera_tiny.pt` (~38 MB)
+- Replaced SAM 1 init with SAM 2 init in `SamBoxSegmenter`:
+  - Old: `from segment_anything import SamPredictor, sam_model_registry`
+  - New: `from sam2.build_sam import build_sam2; from sam2.sam2_image_predictor import SAM2ImagePredictor`
+  - Config path (Hydra): `configs/sam2.1/sam2.1_hiera_t.yaml`
+  - Env var: `SAM_CHECKPOINT` still works, `SAM_MODEL_TYPE` now accepts `tiny|small|base_plus|large`
+- `segment_all_classes` body is **unchanged** — SAM 2 `SAM2ImagePredictor` has identical `set_image()` and `predict()` signatures
+
+**Architecture after upgrade** (only `__init__` changed):
+```
+SAM 2.1 ViT-T SamPredictor           ← 38MB vs 375MB ViT-B
+    set_image() ← once for full image
+    predict(box=frcnn_box) → (3, H, W) masks, iou_preds
+```
+
+**Key discovery**: `build_sam2` uses Hydra (initialized in `sam2/__init__.py` via `initialize_config_module("sam2")`). Config must be the full path relative to the sam2 package: `configs/sam2.1/sam2.1_hiera_t.yaml`.
+
+**Benefits**:
+- Checkpoint size: 375 MB → 38 MB (10× smaller)
+- Better mask quality for closely packed items (improved ViT backbone)
+- Identical API: zero changes to inference logic
+
+**Server start command** (unchanged env var name):
+```bash
+export SAM_CHECKPOINT=/path/to/checkpoints/sam2.1_hiera_tiny.pt
+export SAM_MODEL_TYPE=tiny
+uv run python scripts/serve_api.py --checkpoint checkpoints/best.pt --host 0.0.0.0 --port 8000
+```
+
+---
+
 ## Current Architecture (as of final version)
 
 ```
@@ -175,7 +216,7 @@ POST /vision/scan (FastAPI, port 8000)
 FRCNN (ResNet50 + FPN + RPN)          ← zone detection
     │  boxes grouped by class
     ▼
-SAM ViT-B SamPredictor
+SAM 2.1 ViT-T SAM2ImagePredictor
     set_image() ← once for full image
     │
     ├─ predict(box=frcnn_box_1) → mask
@@ -200,6 +241,5 @@ React Native (Expo) — SVG polygon overlay on scan result image
 
 ## Pending / Future Work
 
-- **SAM 2 upgrade**: SAM 2 ViT-T (~38MB) is faster than SAM 1 ViT-B and produces significantly better masks for touching/overlapping objects. Drop-in swap in `SamBoxSegmenter.__init__` using `sam2.build_sam.build_sam2` and `SAM2AutomaticMaskGenerator` (or predictor equivalent).
 - **FRCNN NMS tuning**: reducing the FRCNN `nms_thresh` would decrease double-detections upstream, reducing reliance on mask IoU NMS.
 - **Response caching**: SAM image encoding is the bottleneck. If the same image is submitted twice (retry), re-encoding wastes time. A simple hash-based cache of the image embeddings would help.

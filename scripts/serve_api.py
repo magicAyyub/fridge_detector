@@ -35,12 +35,26 @@ from utils import get_device
 
 
 class SamBoxSegmenter:
-    """Optional SAM segmenter prompted by detector boxes.
+    """SAM 2 segmenter prompted by FRCNN bounding boxes.
 
     Enabled by setting environment variables:
-      SAM_CHECKPOINT=/path/to/sam_checkpoint.pth
-      SAM_MODEL_TYPE=vit_b|vit_l|vit_h
+      SAM_CHECKPOINT=/path/to/sam2.1_hiera_tiny.pt  (or _small / _base+ / _large)
+      SAM_MODEL_TYPE=tiny|small|base_plus|large        (default: tiny)
+
+    SAM 2 vs SAM 1:
+      - Smaller checkpoint (ViT-T ~38 MB vs ViT-B ~375 MB)
+      - Faster inference on CPU
+      - Better mask quality, especially for touching/overlapping objects
+      - Same predict() API: set_image() once, predict(box=...) per detection
     """
+
+    # Maps SAM_MODEL_TYPE env value → SAM 2.1 config path (relative to sam2 package)
+    _SAM2_CONFIGS = {
+        'tiny':      'configs/sam2.1/sam2.1_hiera_t.yaml',
+        'small':     'configs/sam2.1/sam2.1_hiera_s.yaml',
+        'base_plus': 'configs/sam2.1/sam2.1_hiera_b+.yaml',
+        'large':     'configs/sam2.1/sam2.1_hiera_l.yaml',
+    }
 
     def __init__(self) -> None:
         self.enabled = False
@@ -48,7 +62,7 @@ class SamBoxSegmenter:
         self._predictor = None
 
         ckpt = os.environ.get('SAM_CHECKPOINT')
-        model_type = os.environ.get('SAM_MODEL_TYPE', 'vit_b')
+        model_type = os.environ.get('SAM_MODEL_TYPE', 'tiny')
         if not ckpt:
             self.status = 'SAM_CHECKPOINT not set'
             return
@@ -57,26 +71,27 @@ class SamBoxSegmenter:
             self.status = f'SAM_CHECKPOINT not found: {ckpt_path}'
             return
 
-        try:
-            from segment_anything import SamPredictor, sam_model_registry
-        except Exception as exc:  # pragma: no cover - optional dependency
-            self.status = f'segment_anything import failed: {exc}'
+        config_name = self._SAM2_CONFIGS.get(model_type)
+        if config_name is None:
+            self.status = f'Unknown SAM_MODEL_TYPE: {model_type}. Choose from {list(self._SAM2_CONFIGS)}'
             return
 
-        if model_type not in sam_model_registry:
-            self.status = f'Unknown SAM_MODEL_TYPE: {model_type}'
+        try:
+            from sam2.build_sam import build_sam2
+            from sam2.sam2_image_predictor import SAM2ImagePredictor
+        except Exception as exc:
+            self.status = f'sam2 import failed: {exc}'
             return
 
         try:
             sam_device = 'cuda' if torch.cuda.is_available() else 'cpu'
-            sam = sam_model_registry[model_type](checkpoint=str(ckpt_path))
-            sam.to(device=sam_device)
-            # Predictor: encode image once, then run fast decoder per box.
-            # Much faster than AMG which runs a full 8x8 grid scan per crop.
-            self._predictor = SamPredictor(sam)
+            sam2_model = build_sam2(config_name, str(ckpt_path), device=sam_device)
+            # Encode image once → fast decode per FRCNN box. Same strategy as before,
+            # now with SAM 2's better ViT backbone and improved mask decoder.
+            self._predictor = SAM2ImagePredictor(sam2_model)
             self.enabled = True
-            self.status = f'Predictor enabled ({model_type} on {sam_device})'
-        except Exception as exc:  # pragma: no cover - runtime env dependent
+            self.status = f'SAM 2 enabled ({model_type} on {sam_device})'
+        except Exception as exc:
             self.status = f'init failed: {exc}'
 
     @staticmethod
@@ -100,6 +115,8 @@ class SamBoxSegmenter:
 
     @staticmethod
     def _mask_iou(a: np.ndarray, b: np.ndarray) -> float:
+        a = a.astype(bool)
+        b = b.astype(bool)
         inter = int((a & b).sum())
         union = int((a | b).sum())
         return inter / max(1, union)
