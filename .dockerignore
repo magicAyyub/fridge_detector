@@ -1,0 +1,15 @@
+.venv/
+.git/
+.gitignore
+data/
+outputs/
+__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+.DS_Store
+*.ipynb
+*.zip
+*.log
+*.png
+checkpoints/

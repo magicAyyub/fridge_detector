@@ -21,8 +21,25 @@ from typing import Any
 import cv2
 import numpy as np
 import torch
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile, Depends, Security
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security.api_key import APIKeyHeader
+
+API_KEY_NAME = "X-API-Key"
+api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
+
+
+def verify_api_key(api_key: str | None = Security(api_key_header)) -> str | None:
+    expected_key = os.environ.get("API_KEY")
+    if not expected_key:
+        # If API_KEY environment variable is not set, allow all requests (local dev mode)
+        return None
+    if api_key == expected_key:
+        return api_key
+    raise HTTPException(
+        status_code=401,
+        detail="Unauthorized: Invalid or missing X-API-Key header"
+    )
 from PIL import Image
 import torchvision.transforms.functional as TF
 import uvicorn
@@ -32,6 +49,23 @@ sys.path.insert(0, str(ROOT / 'src'))
 
 from models.detector import FridgeDetector
 from utils import get_device
+
+# Class categories for quantity estimation
+COUNTABLE_CLASSES = {
+    'apple', 'banana', 'cabbage', 'carrot', 'cucumber', 'date', 'eggplant',
+    'eggs', 'garlic', 'lemon', 'lettuce', 'okra', 'onion', 'orange', 'potato',
+    'tomato'
+}
+
+PACKAGE_CLASSES = {
+    'butter', 'cheese', 'milk', 'yogurt', 'bread'
+}
+
+BULK_CLASSES = {
+    'beans', 'beef', 'bulgur', 'chicken', 'chickpea', 'fish', 'lamb',
+    'lentil', 'rice', 'spinach'
+}
+
 
 
 class SamBoxSegmenter:
@@ -271,7 +305,7 @@ def app_factory(args: argparse.Namespace) -> FastAPI:
             'sam': {'enabled': sam_segmenter.enabled, 'status': sam_segmenter.status},
         }
 
-    @app.post('/vision/scan')
+    @app.post('/vision/scan', dependencies=[Depends(verify_api_key)])
     async def vision_scan(
         file: UploadFile = File(...),
         score_threshold: float = Query(0.35, ge=0.0, le=1.0),
@@ -329,7 +363,47 @@ def app_factory(args: argparse.Namespace) -> FastAPI:
             class_results.items(), key=lambda kv: best_score_by_name[kv[0]], reverse=True
         ):
             final_detections.extend(instance_dets)
-            ingredients.append({'id': name, 'name': name, 'quantity': str(count)})
+            
+            # Determine class category, unit, and method
+            if name in COUNTABLE_CLASSES:
+                unit = 'count'
+                quantity_val = str(len(instance_dets))
+                method = 'instance_count' if (include_masks and sam_segmenter.enabled) else 'box_count'
+            elif name in PACKAGE_CLASSES:
+                unit = 'pack'
+                quantity_val = str(len(instance_dets))
+                method = 'instance_count' if (include_masks and sam_segmenter.enabled) else 'box_count'
+            elif name in BULK_CLASSES:
+                unit = 'level'
+                method = 'area_proxy'
+                has_masks = any('mask' in d for d in instance_dets)
+                if has_masks:
+                    total_area = sum(d['mask']['area'] for d in instance_dets if 'mask' in d)
+                else:
+                    total_area = sum((d['box']['x2'] - d['box']['x1']) * (d['box']['y2'] - d['box']['y1']) for d in instance_dets)
+                
+                rel_area = total_area / (args.image_size * args.image_size)
+                if rel_area < 0.05:
+                    quantity_val = 'low'
+                elif rel_area < 0.15:
+                    quantity_val = 'medium'
+                else:
+                    quantity_val = 'high'
+            else:
+                unit = 'count'
+                quantity_val = str(len(instance_dets))
+                method = 'instance_count' if (include_masks and sam_segmenter.enabled) else 'box_count'
+
+            mean_conf = float(np.mean([d['score'] for d in instance_dets])) if instance_dets else 0.0
+
+            ingredients.append({
+                'id': name,
+                'name': name,
+                'quantity': quantity_val,
+                'unit': unit,
+                'method': method,
+                'quantity_confidence': round(mean_conf, 4)
+            })
 
         detections_payload = final_detections
         confidence = max(best_score_by_name.values()) if best_score_by_name else 0.0
