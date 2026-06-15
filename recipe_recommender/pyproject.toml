@@ -1,0 +1,23 @@
+[project]
+name = "fridge-detector"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "rich>=13.0",
+    "pyyaml>=6.0.3",
+    "opencv-python>=4.10.0",
+    "fastapi>=0.116.0",
+    "uvicorn>=0.34.0",
+    "python-multipart>=0.0.20",
+    "roboflow>=1.1.48",
+    "segment-anything>=1.0",
+    "datasets==2.21.0",
+]
+[tool.hatch.build.targets.wheel]
+packages = ["src/utils", "src/models", "src/data"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
