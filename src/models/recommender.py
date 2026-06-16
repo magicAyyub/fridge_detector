@@ -2,6 +2,7 @@
 models/recommender.py
 ──────────────────────
 Orchestrateur principal — utilise TwoTowerScorer pour le scoring.
+(Version épurée sans traduction EN->FR)
 """
 
 import json
@@ -9,8 +10,8 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from src.models.two_tower import TwoTowerScorer
-from src.models.vectorizer import tokenize
+from .two_tower import TwoTowerScorer
+from .vectorizer import tokenize
 from src.utils.schemas import RecipeResult, RecipeStep, NutritionInfo
 
 logger = logging.getLogger(__name__)
@@ -20,21 +21,12 @@ class RecipeRecommender:
     def __init__(
         self,
         dataset_path: str = "data/recipes.json",
-        translate: bool = False,
     ):
         self.dataset_path = Path(dataset_path)
-        self.translate    = translate
 
         self._recipes: List[Dict[str, Any]] = []
         self._scorer  = TwoTowerScorer()
         self._fitted  = False
-        self._translator = None
-
-    def _get_translator(self):
-        if self._translator is None:
-            from src.models.translator import Translator
-            self._translator = Translator()
-        return self._translator
 
     # ------------------------------------------------------------------
     # Fit
@@ -98,19 +90,11 @@ class RecipeRecommender:
             ]
             missing_en = [ing for ing in all_ingredients_en if ing not in matched_en]
 
-            if self.translate:
-                tr = self._get_translator()
-                title_fr           = tr.translate(title_en)
-                all_ingredients_fr = tr.translate_batch(all_ingredients_en)
-                matched_fr         = tr.translate_batch(matched_en)
-                missing_fr         = tr.translate_batch(missing_en)
-                steps_fr           = tr.translate_steps(steps_en)
-            else:
-                title_fr           = title_en
-                all_ingredients_fr = all_ingredients_en
-                matched_fr         = matched_en
-                missing_fr         = missing_en
-                steps_fr           = steps_en
+            title_fr           = title_en
+            all_ingredients_fr = all_ingredients_en
+            matched_fr         = matched_en
+            missing_fr         = missing_en
+            steps_fr           = steps_en
 
             steps_out = [
                 RecipeStep(step=j + 1, instruction=s)

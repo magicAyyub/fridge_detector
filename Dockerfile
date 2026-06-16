@@ -28,6 +28,5 @@ ENV SAM_CHECKPOINT=/app/checkpoints/sam2.1_hiera_tiny.pt
 ENV SAM_MODEL_TYPE=tiny
 ENV PORT=8000
 
-# Run S3 weight downloader, then launch FastAPI serving script
 EXPOSE 8000
-CMD ["sh", "-c", "python scripts/download_weights.py && python scripts/serve_api.py --checkpoint checkpoints/best.pt --host 0.0.0.0 --port 8000"]
+CMD ["sh", "-c", "python scripts/download_weights.py && python -m uvicorn src.api.main:app --host 0.0.0.0 --port 8000"]

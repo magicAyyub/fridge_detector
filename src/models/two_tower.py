@@ -26,7 +26,7 @@ import math
 import logging
 from typing import Any, Dict, List, Optional
 
-from src.models.vectorizer import tokenize
+from .vectorizer import tokenize
 
 logger = logging.getLogger(__name__)
 

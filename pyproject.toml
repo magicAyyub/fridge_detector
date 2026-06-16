@@ -17,6 +17,8 @@ dependencies = [
     "segment-anything>=1.0",
     "sam2>=1.1.0",
     "boto3>=1.34.0",
+    "datasets==2.21.0",
+    "pandas",
 ]
 
 [tool.hatch.build.targets.wheel]

@@ -8,7 +8,7 @@ Peut être remplacée par un appel LLM ou une API nutrition.
 """
 
 from typing import List
-from src.utils.schemas import SubstituteResult
+from .schemas import SubstituteResult
 
 # ── Table de substitution ──────────────────────────────────────────────────
 # Format : ingrédient → [(substitut, note)]
