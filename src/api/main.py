@@ -111,6 +111,11 @@ app.include_router(recommend.router)
 app.include_router(feedback.router)
 
 
+@app.get("/")
+async def root() -> dict:
+    return {"status": "ok", "message": "WhatIEat Unified Backend API"}
+
+
 @app.get('/health')
 async def health() -> dict:
     device = getattr(app.state, "device", "unknown")

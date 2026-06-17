@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Download model checkpoints from Amazon S3 on container startup.
+"""Download model checkpoints and data files from Amazon S3 on container startup.
 
 Reads environment variables:
   - BUCKET_NAME: Name of the Amazon S3 bucket. If empty, downloads are skipped.
@@ -10,13 +10,14 @@ import os
 import sys
 from pathlib import Path
 
-# Files to download
-CHECKPOINTS = [
-    "best.pt",
-    "sam2.1_hiera_tiny.pt"
+# Files to download: (local_path, s3_filename)
+FILES_TO_DOWNLOAD = [
+    ("checkpoints/best.pt", "best.pt"),
+    ("checkpoints/sam2.1_hiera_tiny.pt", "sam2.1_hiera_tiny.pt"),
+    ("data/recipes.json", "recipes.json")
 ]
 
-def download_checkpoints() -> None:
+def download_assets() -> None:
     bucket = os.environ.get("BUCKET_NAME")
     if not bucket:
         print("[INFO] BUCKET_NAME env var is not set. Skipping S3 download.")
@@ -24,10 +25,8 @@ def download_checkpoints() -> None:
 
     prefix = os.environ.get("S3_PREFIX", "checkpoints").strip("/")
     
-    # Resolve checkpoints directory relative to root
+    # Resolve project root directory
     root_dir = Path(__file__).resolve().parent.parent
-    checkpoints_dir = root_dir / "checkpoints"
-    checkpoints_dir.mkdir(parents=True, exist_ok=True)
 
     try:
         import boto3
@@ -39,9 +38,12 @@ def download_checkpoints() -> None:
     print(f"[INFO] Initializing S3 client to download from bucket: {bucket}")
     s3 = boto3.client("s3")
 
-    for filename in CHECKPOINTS:
-        target_path = checkpoints_dir / filename
-        s3_key = f"{prefix}/{filename}" if prefix else filename
+    for local_rel_path, s3_filename in FILES_TO_DOWNLOAD:
+        target_path = root_dir / local_rel_path
+        # Ensure target parent folder exists (e.g. checkpoints/ or data/)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+
+        s3_key = f"{prefix}/{s3_filename}" if prefix else s3_filename
 
         if target_path.exists():
             print(f"[INFO] File already exists, skipping S3 download: {target_path}")
@@ -50,15 +52,15 @@ def download_checkpoints() -> None:
         print(f"[INFO] Downloading s3://{bucket}/{s3_key} -> {target_path} ...")
         try:
             s3.download_file(bucket, s3_key, str(target_path))
-            print(f"[INFO] Successfully downloaded: {filename}")
+            print(f"[INFO] Successfully downloaded: {s3_filename}")
         except NoCredentialsError:
             print("[ERROR] AWS credentials not found. Make sure your App Runner IAM Instance Role has S3 Read access.", file=sys.stderr)
             sys.exit(1)
         except Exception as e:
-            print(f"[ERROR] Failed to download {filename}: {e}", file=sys.stderr)
+            print(f"[ERROR] Failed to download {s3_filename}: {e}", file=sys.stderr)
             sys.exit(1)
 
-    print("[INFO] All checkpoints checked and ready.")
+    print("[INFO] All assets checked and ready.")
 
 if __name__ == "__main__":
-    download_checkpoints()
+    download_assets()
