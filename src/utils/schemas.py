@@ -75,7 +75,7 @@ class IngredientsInput(BaseModel):
         default=None,
         description="Profil utilisateur depuis l'onboarding pour filtrage calorique et objectif",
     )
-    top_n: int = Field(default=5, ge=1, le=20)
+    top_n: int = Field(default=15, ge=1, le=20)
     min_score: float = Field(default=0.05, ge=0.0, le=1.0)
 
     @model_validator(mode="after")

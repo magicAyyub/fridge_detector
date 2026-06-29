@@ -27,8 +27,7 @@ import torch.nn.functional as F
 
 from torchvision.ops import box_iou, clip_boxes_to_image, remove_small_boxes, nms
 
-from utils.box_ops import encode_boxes, decode_boxes
-
+from src.utils.box_ops import encode_boxes, decode_boxes
 
 class RPNHead(nn.Module):
     """The shared head: 3x3 conv → two sibling 1x1 convs (objectness + boxes)."""

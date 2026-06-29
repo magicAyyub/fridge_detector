@@ -16,7 +16,7 @@ from .backbone import ResNetBackbone
 from .fpn import FeaturePyramidNetwork
 from .rpn import RegionProposalNetwork
 from .detection_head import RoIHeadsModule
-from utils.anchors import AnchorGenerator
+from src.utils.anchors import AnchorGenerator
 
 
 # ImageNet normalization (the pretrained backbone expects this)

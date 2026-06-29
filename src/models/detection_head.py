@@ -21,7 +21,7 @@ import torch.nn.functional as F
 
 from torchvision.ops import box_iou, clip_boxes_to_image, remove_small_boxes, batched_nms, RoIAlign
 
-from utils.box_ops import encode_boxes, decode_boxes
+from src.utils.box_ops import encode_boxes, decode_boxes
 
 
 class DetectionHead(nn.Module):
