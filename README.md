@@ -130,7 +130,7 @@ The API backend is a unified FastAPI service supporting different environments (
 
 ### 1. Environment Configurations
 The server uses environment profiles to load configurations:
-- `.env.development` (default): Used for local development. S3 downloads are skipped and local checkpoints are used directly.
+- `.env.development`: Used for local development. Copy `.env.development.example` to `.env.development` to start. S3 downloads are skipped and local checkpoints are used directly.
 - `.env.production.example`: A template for production. Copy this file to `.env.production` (do not commit it!) and specify your S3 bucket and database details.
 
 In production, system environment variables (e.g. set via ECS or App Runner) automatically override `.env` files.
@@ -173,6 +173,24 @@ docker run -p 8000:8000 \
   -e DATABASE_URL="postgresql://user:pass@ep-xxx.neon.tech/dbname?sslmode=require" \
   fridge-detector
 ```
+
+### 5. Connecting Mobile App (Physical Device vs Simulator)
+
+When testing the Expo mobile application with a local backend:
+- **Simulator (iOS or Android)**: You can connect using `localhost` or `http://127.0.0.1:8000`.
+- **Physical Phone**: The phone and the development computer must be on the same Wi-Fi network (or connection sharing). Since the phone cannot resolve `localhost`, you must configure the backend to use your computer's local network IP address.
+
+To set up a physical phone:
+1. Find your computer's local IP address. On macOS:
+   ```bash
+   ipconfig getifaddr en0
+   # (If using connection sharing, you can check system preferences or ifconfig)
+   ```
+2. Start the Expo app by overriding the API URL with your computer's local IP (e.g. `172.20.10.10`):
+   ```bash
+   EXPO_PUBLIC_API_URL=http://172.20.10.10:8000 npm run start
+   ```
+   This overrides the `apiBaseUrl` configuration dynamically without needing to edit `runtime-config.json` inside the repository.
 
 ## Future work
 
