@@ -12,11 +12,10 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import torch
-from dotenv import load_dotenv
+from src.utils import get_device, load_app_env
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.utils import get_device
 from src.models.detector import FridgeDetector
 from src.models.recommender import RecipeRecommender
 from src.utils.feedback_store import get_feedback_store
@@ -33,7 +32,7 @@ from src.api.routes.recipes  import router as recipes_router
 from src.api.routes.fridge   import router as fridge_router
 from src.api.routes.feedback import router as feedback_router
 
-load_dotenv()
+load_app_env()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 

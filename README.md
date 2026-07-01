@@ -124,12 +124,54 @@ python /kaggle/input/fridge-detector/scripts/train.py \
 
 Checkpoints are written to `/kaggle/working/checkpoints`.
 
-## API Serving
+## API Serving & Environment Profiles
 
-After training, place the chosen checkpoint in `checkpoints/` and run the inference API:
+The API backend is a unified FastAPI service supporting different environments (development and production) via the `APP_ENV` environment variable.
+
+### 1. Environment Configurations
+The server uses environment profiles to load configurations:
+- `.env.development` (default): Used for local development. S3 downloads are skipped and local checkpoints are used directly.
+- `.env.production.example`: A template for production. Copy this file to `.env.production` (do not commit it!) and specify your S3 bucket and database details.
+
+In production, system environment variables (e.g. set via ECS or App Runner) automatically override `.env` files.
+
+### 2. S3 Weight Downloading
+If `BUCKET_NAME` is defined in the active environment, the startup script will automatically check and download weights from AWS S3:
+```bash
+# Verify download behavior manually:
+APP_ENV=production uv run python scripts/download_weights.py
+```
+
+### 3. Run Locally (Development)
+To run the server in development mode using local weights:
+```bash
+# Start server with development profile
+APP_ENV=development PYTHONPATH=src:. uv run python -m uvicorn src.api.main:app --host 0.0.0.0 --port 8000
+```
+Visit `http://localhost:8000/docs` to view the Swagger API documentation.
+
+### 4. Running with Docker & ECS (Production)
+You can build the image, push to ECR, and run in ECS:
 
 ```bash
-uv run python scripts/serve_api.py --checkpoint checkpoints/best.pt --host 0.0.0.0 --port 8000
+# Build the Docker image
+docker build -t fridge-detector .
+
+# Run the container locally (simulating development via volume mounting)
+docker run -p 8000:8000 \
+  -e APP_ENV=development \
+  -e PORT=8000 \
+  -v $(pwd)/checkpoints:/app/checkpoints \
+  -v $(pwd)/data:/app/data \
+  fridge-detector
+
+# Run in production (downloads weights from S3 using IAM role/credentials)
+docker run -p 8000:8000 \
+  -e APP_ENV=production \
+  -e PORT=8000 \
+  -e BUCKET_NAME=my-prod-weights-bucket \
+  -e DATABASE_URL="postgresql://user:pass@ep-xxx.neon.tech/dbname?sslmode=require" \
+  fridge-detector
 ```
 
 ## Future work

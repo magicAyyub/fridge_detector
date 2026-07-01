@@ -30,4 +30,4 @@ ENV PORT=8000
 ENV PYTHONPATH=/app:/app/src
 
 EXPOSE 8000
-CMD ["sh", "-c", "python scripts/download_weights.py && python -m uvicorn src.api.main:app --host 0.0.0.0 --port 8000"]
+CMD ["sh", "-c", "python scripts/download_weights.py && python -m uvicorn src.api.main:app --host 0.0.0.0 --port $PORT"]

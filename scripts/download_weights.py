@@ -18,6 +18,25 @@ FILES_TO_DOWNLOAD = [
 ]
 
 def download_assets() -> None:
+    # Resolve project root directory
+    root_dir = Path(__file__).resolve().parent.parent
+
+    # Load APP_ENV environment file
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        load_dotenv = None
+
+    if load_dotenv:
+        app_env = os.environ.get("APP_ENV", "development").lower()
+        env_file = root_dir / f".env.{app_env}"
+        if env_file.exists():
+            load_dotenv(str(env_file))
+            print(f"[INFO] Loaded environment configuration from: {env_file}")
+        fallback_env = root_dir / ".env"
+        if fallback_env.exists():
+            load_dotenv(str(fallback_env))
+
     bucket = os.environ.get("BUCKET_NAME")
     if not bucket:
         print("[INFO] BUCKET_NAME env var is not set. Skipping S3 download.")
