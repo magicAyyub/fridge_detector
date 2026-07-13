@@ -37,7 +37,7 @@ ECR_REPO_URL="$ECR_REGISTRY/fridge-detector"
 # 2. Build the Docker Image
 echo "Step 1: Building Docker Image"
 echo "INFO: Building image 'fridge-detector' (ignoring large weight files to keep size small)..."
-docker build -t fridge-detector .
+docker build --platform linux/amd64 -t fridge-detector .
 
 # 3. Authenticate with ECR
 echo "Step 2: Authenticating with AWS ECR"
