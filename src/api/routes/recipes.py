@@ -32,6 +32,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from src.utils.auth_utils import get_current_user_id
+from src.utils.fridge_deduction import apply_fridge_deductions, restore_fridge_deductions
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/users/me/recipes", tags=["recipes"])
@@ -332,10 +333,15 @@ async def mark_prepared(
 
         async with conn.transaction():
             # 1. Log préparation
-            await conn.execute(
-                "INSERT INTO recipe_preparations (user_id, recipe_id) VALUES ($1,$2)",
+            prep = await conn.fetchrow(
+                """
+                INSERT INTO recipe_preparations (user_id, recipe_id)
+                VALUES ($1, $2)
+                RETURNING id
+                """,
                 user_id, recipe_id,
             )
+            preparation_id = prep["id"]
 
             # 2. Marque cuisinée
             await conn.execute(
@@ -347,52 +353,13 @@ async def mark_prepared(
                 user_id, recipe_id,
             )
 
-            # 3. Déduction frigo
-            # Stratégie : pour chaque ingrédient de la recette, cherche une correspondance
-            # dans le frigo par matching bidirectionnel (ing dans fridge OU fridge dans ing)
-            deducted = []
-            all_ings_to_check = payload.matched_ingredients or []
-            if all_ings_to_check:
-                # Charge tout le frigo une fois (évite N requêtes)
-                fridge_rows = await conn.fetch(
-                    "SELECT id, ingredient_name, quantity FROM fridge_items WHERE user_id=$1",
-                    user_id,
-                )
-                fridge = [(r["id"], r["ingredient_name"].lower(), float(r["quantity"])) for r in fridge_rows]
-
-                for ing in all_ings_to_check:
-                    ing_lower  = ing.lower()
-                    ing_words  = set(ing_lower.split())
-                    matched_id = None
-                    matched_qty= None
-
-                    for fid, fname, fqty in fridge:
-                        fname_words = set(fname.split())
-                        # Match si partage au moins un mot significatif (>3 chars)
-                        common = {w for w in ing_words & fname_words if len(w) > 3}
-                        if common or ing_lower in fname or fname in ing_lower:
-                            matched_id  = fid
-                            matched_qty = fqty
-                            break
-
-                    if matched_id is None:
-                        continue
-
-                    new_qty = matched_qty - 1
-                    if new_qty <= 0:
-                        await conn.execute(
-                            "DELETE FROM fridge_items WHERE id=$1 AND user_id=$2",
-                            matched_id, user_id,
-                        )
-                        # Retire du cache local
-                        fridge = [(fid, fn, fq) for fid, fn, fq in fridge if fid != matched_id]
-                    else:
-                        await conn.execute(
-                            "UPDATE fridge_items SET quantity=$1, updated_at=NOW() WHERE id=$2",
-                            new_qty, matched_id,
-                        )
-                        fridge = [(fid, fn, new_qty if fid == matched_id else fq) for fid, fn, fq in fridge]
-                    deducted.append(ing)
+            # 3. Déduction frigo (loggée pour restauration si annulation)
+            deducted = await apply_fridge_deductions(
+                conn,
+                user_id,
+                preparation_id,
+                payload.matched_ingredients or [],
+            )
 
     return {"message": "Recette cuisinée.", "deducted": deducted}
 
@@ -403,30 +370,45 @@ async def unmark_prepared(
     request:   Request,
     user_id:   int = Depends(get_current_user_id),
 ):
-    """Annule la dernière préparation du jour."""
+    """Annule la dernière préparation du jour et restaure le frigo."""
     pool = request.app.state.db_pool
     async with pool.acquire() as conn:
-        await conn.execute(
-            """
-            DELETE FROM recipe_preparations WHERE id = (
+        async with conn.transaction():
+            prep = await conn.fetchrow(
+                """
                 SELECT id FROM recipe_preparations
                 WHERE user_id=$1 AND recipe_id=$2
                   AND prepared_at::date = CURRENT_DATE
-                ORDER BY prepared_at DESC LIMIT 1
-            )
-            """,
-            user_id, recipe_id,
-        )
-        count = await conn.fetchval(
-            "SELECT COUNT(*) FROM recipe_preparations WHERE user_id=$1 AND recipe_id=$2",
-            user_id, recipe_id,
-        )
-        if count == 0:
-            await conn.execute(
-                "UPDATE user_saved_recipes SET is_prepared=FALSE, prepared_at=NULL WHERE user_id=$1 AND recipe_id=$2",
+                ORDER BY prepared_at DESC
+                LIMIT 1
+                """,
                 user_id, recipe_id,
             )
-    return {"message": "Préparation annulée."}
+            if not prep:
+                raise HTTPException(status_code=404, detail="Aucune préparation aujourd'hui.")
+
+            restored = await restore_fridge_deductions(conn, user_id, prep["id"])
+
+            await conn.execute(
+                "DELETE FROM recipe_preparations WHERE id=$1",
+                prep["id"],
+            )
+
+            count = await conn.fetchval(
+                "SELECT COUNT(*) FROM recipe_preparations WHERE user_id=$1 AND recipe_id=$2",
+                user_id, recipe_id,
+            )
+            if count == 0:
+                await conn.execute(
+                    """
+                    UPDATE user_saved_recipes
+                    SET is_prepared=FALSE, prepared_at=NULL
+                    WHERE user_id=$1 AND recipe_id=$2
+                    """,
+                    user_id, recipe_id,
+                )
+
+    return {"message": "Préparation annulée.", "restored": restored}
 
 
 @router.delete("/{recipe_id}")
